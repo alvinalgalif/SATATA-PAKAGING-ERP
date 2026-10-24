@@ -2,3 +2,5 @@
 
 /* Searches are attached only to the visible section's own record table. */
 .scoped-search{display:flex;align-items:flex-end;gap:12px;padding:16px 20px;border-bottom:1px solid var(--border);white-space:normal;flex-wrap:wrap}.scoped-search-label{display:flex;flex-direction:column;gap:7px;color:#829285;font-size:10px;flex:1;min-width:160px;max-width:380px}.scoped-search-label input.search{font-size:12px;padding:10px 12px}.scoped-search button{margin-bottom:2px}.search-status{padding:0 0 11px;margin-left:auto}.search-empty-message{text-align:center;padding:30px 20px;white-space:normal;color:#8b978e}.table-wrap tr[hidden]{display:none!important}@media(max-width:720px){.scoped-search{padding:14px;gap:10px}.scoped-search-label{min-width:140px}.search-status{margin-left:0;padding-bottom:0;width:100%}}@media print{.table-wrap tr[hidden]{display:table-row!important}.table-wrap tr.search-empty{display:none!important}}
+
+.security-setup{max-width:850px;margin:35px auto;padding:20px}.security-setup .panel{margin-bottom:24px}#main>.panel+#password-form,#password-form{margin-top:24px}

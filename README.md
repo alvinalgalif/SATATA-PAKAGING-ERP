@@ -1,12 +1,12 @@
 # Satata Packaging ERP
 
-A local, database-backed ERP website. No dependencies or Google Sheets backend.
+A database-backed packaging ERP with local mode and guarded production configuration. It does not use Google Sheets as a backend. See SECURITY.md for authentication, deployment and encrypted backup details.
 
 ## Start
 
-Double-click **Start ERP.cmd**, then open http://127.0.0.1:8765 in a browser. Keep the server running while using the website. Python 3.14 is available at `C:\Python314\python.exe` on this computer. Alternatively run `python server.py` from this folder.
+Install the pinned dependencies with `python -m pip install -r requirements.txt`. Then double-click **Start ERP.cmd**, and open http://127.0.0.1:8765 in a browser. Keep the server running while using the website. Python 3.14 is available at `C:\Python314\python.exe` on this computer. Alternatively run `python server.py` from this folder.
 
-On the first visit create your own administrator account. No default production password exists. Add other users in Administration → Users & Roles. Sessions expire after eight hours.
+On the first visit create your own administrator account. No default production password exists. Add other users in Administration → Users & Roles. Sessions expire after thirty idle minutes or eight hours in total. New passwords require 15–128 characters. Account security provides authenticator enrollment and password changes; production Admin access requires verified authenticator setup.
 
 ## Included scope
 
@@ -56,7 +56,7 @@ Recipe editor uses numeric dimension factors, allowances, material dropdowns, la
 
 SQLite data lives in `data/erp.sqlite3` with WAL files while running. Stop the server before copying the database for a simple backup, or use SQLite's backup API. Do not commit real database files. This is a local single-business application; it is not yet an internet deployment or a managed production service.
 
-Server enforcement includes authenticated cookie sessions, PBKDF2 password hashes, CSRF/origin/host validation, role checks, unique PI and LC numbers, transactional saves, idempotency keys, concurrency serialization, optimistic PI revision checks and audit entries. Prices come from saved server calculations, never client-entered Unit Price values. Decimal arithmetic uses six places for unit prices and half-up cents for PI line totals. Batches preserve their cost currency and conversion rate; PI snapshots preserve recipe, batches, weighted costs and exchange rates. The implemented costing policy is FIFO allocation with weighted cost over the selected batches. No unapproved aggregate currency conversion occurs.
+Server enforcement includes authenticated cookie sessions, PBKDF2 password hashes, CSRF/origin/host validation, role checks, unique PI and LC numbers, transactional saves, idempotency keys, concurrency serialization, optimistic PI revision checks and audit entries. Prices come from saved server calculations, never client-entered Unit Price values. Decimal arithmetic uses six places for unit prices and half-up cents for PI line totals. Batches preserve their cost currency and conversion rate; PI snapshots preserve recipe, batches, weighted costs and exchange rates. See SECURITY.md for the production safeguards and operating requirements. The implemented costing policy is FIFO allocation with weighted cost over the selected batches. No unapproved aggregate currency conversion occurs.
 
 Roles: Admin (all actions), Sales (PI/customer), Approver (approval/cancellation), Manufacturing (recipes/products), Inventory (stock/material/reservation), Finance (LC/collection), Viewer (read only). All signed-in roles can read shared business records; user management and audit data require Admin. Refine this matrix before any broader deployment if customer-specific data isolation is required.
 
@@ -68,11 +68,11 @@ The print template follows the PRINT PI structure: company header/address, appli
 
 ## Verification
 
-Run `python test_erp.py` and `python test_http.py`. Tests use isolated disposable databases and DEMO records, never the real workspace database. Browser QA also uses an isolated demo server (`qa_server.py`) on port 8766, which must not be used as the real business workspace.
+Run `python test_erp.py`, `python test_http.py`, and `python test_security.py`. Tests use isolated disposable databases and DEMO records, never the real workspace database. Browser QA also uses an isolated demo server (`qa_server.py`) on port 8766, which must not be used as the real business workspace.
 
 Covered: supplied formula factors and glue, one-time quantity multiplication, independent sample validation, FIFO weighted costing and multiple PI lines, USD conversion, all-material shortages, tamper/stale-input rejection, unique numbering and revision history, approval, draft/confirmed PI-to-LC transition, duplicate/concurrent LC prevention, partial collections and overpayment rejection, stock/reservation atomicity, duplicate receipts, persistence, role enforcement, login/cookies/CSRF, idempotent saves and session invalidation.
 
-Browser checks completed: desktop/mobile layout, automatic price fill, input invalidation, PI save/approval, PI-derived LC fields, draft/confirmed LC handling, Awaiting LC removal, original PI retention and partial collection with recalculated outstanding. Native printer/PDF pagination across long invoices has not been validated. Public hosting, TLS, managed backups, monitoring and business-specific print sign-off are not included in this local delivery.
+Browser checks completed: desktop/mobile layout, automatic price fill, input invalidation, PI save/approval, PI-derived LC fields, draft/confirmed LC handling, Awaiting LC removal, original PI retention and partial collection with recalculated outstanding. Native printer/PDF pagination across long invoices has not been validated. Public hosting, actual TLS/proxy configuration, scheduled off-site backups, monitoring and business-specific print sign-off still require configuration on the chosen host. Encrypted backup/restore and guarded production startup are implemented; see SECURITY.md.
 
 Product counting unit is catalog metadata, not an automatic recipe conversion. Existing per-piece calculations and saved PI snapshots retain their original quantity basis. ROLL/KG conversion awaits the user's specific business rule.
 

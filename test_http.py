@@ -1,10 +1,10 @@
 import json,threading,urllib.request,urllib.error,http.cookiejar,uuid
-from http.server import ThreadingHTTPServer
+from webapp import create_app,create_http_server,close_http_server
 from test_erp import ERPTests
 import server as app
 
 def main():
- fixture=ERPTests();fixture.setUp();srv=ThreadingHTTPServer(('127.0.0.1',0),app.Handler);threading.Thread(target=srv.serve_forever,daemon=True).start();base='http://127.0.0.1:'+str(srv.server_port);jar=http.cookiejar.CookieJar();client=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar));csrf='';checks=0
+ fixture=ERPTests();fixture.setUp();srv=create_http_server(create_app());threading.Thread(target=srv.run,daemon=True).start();base='http://127.0.0.1:'+str(srv.effective_port);jar=http.cookiejar.CookieJar();client=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar));csrf='';checks=0
  def req(path,data=None,key=None,token=None):
   headers={'Content-Type':'application/json','X-CSRF-Token':csrf if token is None else token,'Idempotency-Key':key or str(uuid.uuid4())};r=urllib.request.Request(base+path,data=json.dumps(data).encode() if data is not None else None,headers=headers)
   try:
@@ -37,5 +37,5 @@ def main():
   code,s=req('/api/state');check(not s['audit'] and not s['users'],'restricted administrative data')
   code,_=req('/api/logout',{});code,_=req('/api/state');check(code==401,'session invalidated')
   print(str(checks)+' HTTP integration checks passed. Test database is isolated and disposable.')
- finally:srv.shutdown();srv.server_close();fixture.tearDown()
+ finally:close_http_server(srv);fixture.tearDown()
 if __name__=='__main__':main()

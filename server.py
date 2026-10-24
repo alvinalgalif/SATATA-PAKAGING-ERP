@@ -1,11 +1,12 @@
 import json,os,sqlite3,secrets,hashlib,hmac,time,re
 from decimal import Decimal,ROUND_HALF_UP
 from datetime import date,datetime,timezone
-from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 from pathlib import Path
+import sys
 from contextlib import contextmanager
 from urllib.parse import urlparse
 ROOT=Path(__file__).resolve().parent
+if (ROOT/'.runtime-deps').is_dir():sys.path.insert(0,str(ROOT/'.runtime-deps'))
 DB=Path(os.environ.get('ERP_DB',str(ROOT/'data'/'erp.sqlite3')))
 D=Decimal
 ROLES={'Admin':{'admin','pi','approve','recipe','stock','finance','customer'},'Sales':{'pi','customer'},'Approver':{'approve'},'Manufacturing':{'recipe'},'Inventory':{'stock'},'Finance':{'finance'},'Viewer':set()}
@@ -27,14 +28,22 @@ def valid_date(v):
  try:return date.fromisoformat(str(v)).isoformat()
  except Exception:raise RuleError('A valid date is required')
 def hash_password(p,salt=None):
- if len(p)<10:raise RuleError('Password must contain at least 10 characters')
- salt=salt or secrets.token_hex(16);return salt+':'+hashlib.pbkdf2_hmac('sha256',p.encode(),salt.encode(),250000).hex()
+ if not isinstance(p,str) or not 15<=len(p)<=128:raise RuleError('Use a password between 15 and 128 characters')
+ if p.casefold() in {'passwordpassword','123456789012345','qwertyuiopasdfgh'}:raise RuleError('Choose a less predictable password')
+ salt=salt or secrets.token_hex(16)
+ return 'pbkdf2_sha256$600000$'+salt+'$'+hashlib.pbkdf2_hmac('sha256',p.encode(),salt.encode(),600000).hex()
 def verify(p,hashed):
- try:return hmac.compare_digest(hash_password(p,hashed.split(':')[0]),hashed)
- except RuleError:return False
+ if not isinstance(p,str) or not 1<=len(p)<=4096:return False
+ try:
+  if hashed.startswith('pbkdf2_sha256$'):
+   algorithm,rounds,salt,digest=hashed.split('$');rounds=int(rounds)
+   if not 250000<=rounds<=2000000:return False
+  else:salt,digest=hashed.split(':');rounds=250000
+  return hmac.compare_digest(hashlib.pbkdf2_hmac('sha256',p.encode(),salt.encode(),rounds).hex(),digest)
+ except (ValueError,TypeError):return False
 @contextmanager
 def database(write=False):
- DB.parent.mkdir(parents=True,exist_ok=True);c=sqlite3.connect(DB,timeout=30);c.row_factory=sqlite3.Row;c.execute('PRAGMA foreign_keys=ON')
+ DB.parent.mkdir(parents=True,exist_ok=True);c=sqlite3.connect(DB,timeout=30);c.row_factory=sqlite3.Row;c.execute('PRAGMA foreign_keys=ON');c.execute('PRAGMA secure_delete=ON')
  try:
   if write:c.execute('BEGIN IMMEDIATE')
   yield c
@@ -74,6 +83,14 @@ def initialize():
   CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,actor TEXT,action TEXT,entity TEXT,detail TEXT,created TEXT);
   CREATE TABLE IF NOT EXISTS requests(user_id INTEGER,key TEXT,route TEXT,payload TEXT,response TEXT,PRIMARY KEY(user_id,key));
   ''')
+  migrations={'sessions':{'created':'REAL NOT NULL DEFAULT 0','last_seen':'REAL NOT NULL DEFAULT 0','mfa_verified':'INTEGER NOT NULL DEFAULT 0'},'users':{'mfa_secret':"TEXT NOT NULL DEFAULT ''",'mfa_pending':"TEXT NOT NULL DEFAULT ''",'mfa_pending_until':'REAL NOT NULL DEFAULT 0','mfa_last_counter':'INTEGER NOT NULL DEFAULT -1','mfa_recovery':"TEXT NOT NULL DEFAULT '[]'"}}
+  for table,columns in migrations.items():
+   existing={r[1] for r in c.execute('PRAGMA table_info('+table+')')}
+   for column,definition in columns.items():
+    if column not in existing:c.execute('ALTER TABLE '+table+' ADD COLUMN '+column+' '+definition)
+  c.execute('DELETE FROM sessions WHERE created=0 OR expires<?',(time.time(),))
+  c.execute("DELETE FROM requests WHERE payload NOT LIKE 'hmac-sha256:%'")
+  c.execute('CREATE TABLE IF NOT EXISTS auth_attempts(kind TEXT,key TEXT,window_start REAL NOT NULL,attempts INTEGER NOT NULL,PRIMARY KEY(kind,key))')
   if not setting(c,'company'):
    c.execute('INSERT INTO settings VALUES(?,?)',('company',dumps({'name':'SATATA PACKAGING INDUSTRIES LTD','address':'Dhag No. 24353, Road # 04, Foujir Batan, Uttarkhan, Uttara, Dhaka-1230.','bank':'ISLAMI BANK BANGLADESH LTD','bank_address':'SONARGAON JANAPATH ROAD BRANCH, UTTARA, DHAKA-1230','swift':'IBBLBDDH383','account':'','prefix':'SPI','terms':'','shipment':'By Truck','loading':'Factory Premises of Beneficiary','destination':'Applicants Factory'})))
    c.execute('INSERT INTO settings VALUES(?,?)',('template',dumps({'title':'PROFORMA INVOICE','notes':''})))
@@ -146,7 +163,7 @@ def state(c,user):
  lcs=[]
  for lc in rows(c,'SELECT l.*,p.number pi_number FROM lcs l JOIN pis p ON p.id=l.pi_id ORDER BY l.id DESC'):
   lc['details']=json.loads(lc['details']);lc['collections']=rows(c,'SELECT * FROM collections WHERE lc_id=?',(lc['id'],));paid=sum((D(x['amount']) for x in lc['collections']),D(0));lc['collected']=str(paid);lc['outstanding']=str(D(lc['amount'])-paid);lcs.append(lc)
- return {'user':{k:user[k] for k in ['id','name','username','role']},'permissions':list(ROLES[user['role']]),'company':setting(c,'company'),'template':setting(c,'template'),'customers':rows(c,'SELECT * FROM customers ORDER BY name'),'products':rows(c,'SELECT * FROM products'),'materials':rows(c,'SELECT * FROM materials'),'recipes':[{**r,'config':json.loads(r['config']),'sample':json.loads(r['sample']) if r['sample'] else None} for r in rows(c,'SELECT * FROM recipes ORDER BY id DESC')],'batches':stock(c),'pis':[pi_snapshot(c,p) for p in rows(c,'SELECT * FROM pis ORDER BY id DESC')],'lcs':lcs,'movements':rows(c,'SELECT m.*,b.boe,b.batch,mt.name material FROM movements m JOIN batches b ON b.id=m.batch_id JOIN materials mt ON mt.id=b.material_id ORDER BY m.id DESC'),'reservations':rows(c,'SELECT r.*,p.number pi_number,b.boe,b.batch,m.name material FROM reservations r JOIN pis p ON p.id=r.pi_id JOIN batches b ON b.id=r.batch_id JOIN materials m ON m.id=b.material_id ORDER BY r.id DESC'),'audit':rows(c,'SELECT * FROM audit ORDER BY id DESC LIMIT 300') if user['role']=='Admin' else [],'users':rows(c,'SELECT id,name,username,role,active FROM users') if user['role']=='Admin' else [],'roles':{k:sorted(v) for k,v in ROLES.items()}}
+ return {'user':{k:user[k] for k in ['id','name','username','role']},'permissions':list(ROLES[user['role']]),'security':{'mfa_enabled':bool(user.get('mfa_secret'))},'company':setting(c,'company'),'template':setting(c,'template'),'customers':rows(c,'SELECT * FROM customers ORDER BY name'),'products':rows(c,'SELECT * FROM products'),'materials':rows(c,'SELECT * FROM materials'),'recipes':[{**r,'config':json.loads(r['config']),'sample':json.loads(r['sample']) if r['sample'] else None} for r in rows(c,'SELECT * FROM recipes ORDER BY id DESC')],'batches':stock(c),'pis':[pi_snapshot(c,p) for p in rows(c,'SELECT * FROM pis ORDER BY id DESC')],'lcs':lcs,'movements':rows(c,'SELECT m.*,b.boe,b.batch,mt.name material FROM movements m JOIN batches b ON b.id=m.batch_id JOIN materials mt ON mt.id=b.material_id ORDER BY m.id DESC'),'reservations':rows(c,'SELECT r.*,p.number pi_number,b.boe,b.batch,m.name material FROM reservations r JOIN pis p ON p.id=r.pi_id JOIN batches b ON b.id=r.batch_id JOIN materials m ON m.id=b.material_id ORDER BY r.id DESC'),'audit':rows(c,'SELECT * FROM audit ORDER BY id DESC LIMIT 300') if user['role']=='Admin' else [],'users':rows(c,'SELECT id,name,username,role,active FROM users') if user['role']=='Admin' else [],'roles':{k:sorted(v) for k,v in ROLES.items()}}
 def build_pi(c,d,user,old=None):
  customer=one(c,'customers',int(d['customer_id']));currency=d.get('currency');fx=num(d.get('fx',1),'Exchange rate');terms=required(d,'payment_terms');lines=[];virtual={};total=D(0)
  if not isinstance(d.get('lines'),list) or not d['lines'] or len(d['lines'])>50:raise RuleError('Add between 1 and 50 calculated lines')
@@ -299,69 +316,6 @@ def mutate(c,path,d,user):
   else:id=c.execute('INSERT INTO users(name,username,password,role) VALUES(?,?,?,?)',(required(d,'name'),required(d,'username'),hash_password(required(d,'password')),role)).lastrowid
   audit(c,user,'User access updated',id,{'role':role});return {'id':id}
  raise RuleError('Unknown action',404)
-class Handler(BaseHTTPRequestHandler):
- def log_message(self,*args):pass
- def respond(self,status,data,cookie=None):
-  raw=dumps(data).encode();self.send_response(status);self.send_header('Content-Type','application/json; charset=utf-8');self.send_header('Content-Length',str(len(raw)));self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff');self.send_header('X-Frame-Options','DENY')
-  if cookie:self.send_header('Set-Cookie',cookie)
-  self.end_headers();self.wfile.write(raw)
- def identity(self,c):
-  token=next((x.strip()[8:] for x in self.headers.get('Cookie','').split(';') if x.strip().startswith('session=')),None);r=c.execute('SELECT u.*,s.csrf FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND s.expires>? AND u.active=1',(hashlib.sha256((token or '').encode()).hexdigest(),time.time())).fetchone()
-  if not r:raise RuleError('Please sign in',401)
-  return dict(r)
- def do_GET(self):
-  if self.headers.get('Host') not in ['127.0.0.1:'+str(self.server.server_port),'localhost:'+str(self.server.server_port)]:return self.respond(403,{'error':'Local workspace host required'})
-  path=urlparse(self.path).path
-  if path.startswith('/api/'):
-   try:
-    with database() as c:
-     if path=='/api/session':
-      if not c.execute('SELECT 1 FROM users').fetchone():return self.respond(200,{'setup_required':True})
-      u=self.identity(c);return self.respond(200,{'user':{k:u[k] for k in ['id','name','username','role']},'csrf':u['csrf']})
-     user=self.identity(c)
-     if path=='/api/state':return self.respond(200,state(c,user))
-     raise RuleError('Not found',404)
-   except RuleError as e:return self.respond(e.status,{'error':e.message,**e.details})
-  files={'/':'index.html','/app.js':'app.js','/style.css':'style.css'}
-  if path not in files:self.send_error(404);return
-  file=ROOT/'dist'/files[path]
-  if not file.is_file():self.send_error(404);return
-  raw=file.read_bytes();self.send_response(200);self.send_header('Content-Type',{'html':'text/html; charset=utf-8','js':'text/javascript; charset=utf-8','css':'text/css; charset=utf-8'}[file.suffix[1:]]);self.send_header('Content-Length',str(len(raw)));self.send_header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'");self.send_header('X-Content-Type-Options','nosniff');self.end_headers();self.wfile.write(raw)
- def do_POST(self):
-  if self.headers.get('Host') not in ['127.0.0.1:'+str(self.server.server_port),'localhost:'+str(self.server.server_port)]:return self.respond(403,{'error':'Local workspace host required'})
-  path=urlparse(self.path).path
-  try:
-   origin=self.headers.get('Origin')
-   if origin and origin!='http://'+self.headers.get('Host',''):raise RuleError('Cross-origin requests are not allowed',403)
-   length=int(self.headers.get('Content-Length','0'))
-   if not 0<length<=500000:raise RuleError('Invalid request size')
-   d=json.loads(self.rfile.read(length))
-   if not isinstance(d,dict):raise RuleError('JSON object required')
-   with database(True) as c:
-    if path in ['/api/setup','/api/login']:
-     if path=='/api/setup':
-      if c.execute('SELECT 1 FROM users').fetchone():raise RuleError('Setup has already been completed',409)
-      c.execute('INSERT INTO users(name,username,password,role) VALUES(?,?,?,?)',(required(d,'name'),required(d,'username'),hash_password(required(d,'password')),'Admin'))
-     u=c.execute('SELECT * FROM users WHERE username=? AND active=1',(required(d,'username'),)).fetchone()
-     if not u or not verify(required(d,'password'),u['password']):raise RuleError('Invalid username or password',401)
-     token=secrets.token_hex(32);csrf=secrets.token_hex(24);c.execute('INSERT INTO sessions VALUES(?,?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),u['id'],csrf,time.time()+28800));audit(c,dict(u),'Signed in',u['id'],{});response={'csrf':csrf,'ok':True};cookie='session='+token+'; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800'
-    else:
-     user=self.identity(c)
-     if not hmac.compare_digest(self.headers.get('X-CSRF-Token',''),user['csrf']):raise RuleError('Session token mismatch',403)
-     if path=='/api/logout':c.execute('DELETE FROM sessions WHERE user_id=?',(user['id'],));response={'ok':True};cookie='session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'
-     else:
-      key=self.headers.get('Idempotency-Key','')
-      if not key or len(key)>120:raise RuleError('A unique save key is required')
-      cached=c.execute('SELECT * FROM requests WHERE user_id=? AND key=?',(user['id'],key)).fetchone();payload=dumps(d)
-      if cached:
-       if cached['route']!=path or cached['payload']!=payload:raise RuleError('Save key reused with different data',409)
-       response=json.loads(cached['response'])
-      else:response=mutate(c,path,d,user);c.execute('INSERT INTO requests VALUES(?,?,?,?,?)',(user['id'],key,path,payload,dumps(response)))
-      cookie=None
-   self.respond(200,response,cookie)
-  except RuleError as e:self.respond(e.status,{'error':e.message,**e.details})
-  except sqlite3.IntegrityError:self.respond(409,{'error':'Duplicate record or conflicting update. Nothing was partially saved.'})
-  except (ValueError,KeyError,TypeError,ArithmeticError) as e:self.respond(400,{'error':'Invalid or missing input: '+str(e)})
-  except Exception as e:print('Server error:',type(e).__name__,str(e),flush=True);self.respond(500,{'error':'Unable to complete this action; changes were rolled back.'})
 if __name__=='__main__':
- initialize();port=int(os.environ.get('PORT','8765'));print(f'ERP running at http://127.0.0.1:{port}',flush=True);ThreadingHTTPServer(('127.0.0.1',port),Handler).serve_forever()
+ from webapp import main
+ main()
