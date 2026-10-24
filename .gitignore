@@ -1,0 +1,21 @@
+# Runtime records and credentials remain local.
+data/
+__pycache__/
+*.py[cod]
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*-wal
+*-shm
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.venv/
+venv/
+# Local inspection and preview artifacts.
+/inspect_workbook.py
+/*preview*.png
+/github-source.zip
