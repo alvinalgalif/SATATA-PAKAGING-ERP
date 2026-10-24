@@ -19,3 +19,11 @@ venv/
 /inspect_workbook.py
 /*preview*.png
 /github-source.zip
+
+.runtime-deps/
+backups/
+*.fernet
+
+.audit-deps/
+*recovery-codes*
+*.token

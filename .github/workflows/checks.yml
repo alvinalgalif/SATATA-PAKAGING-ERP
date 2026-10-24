@@ -8,18 +8,26 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
+      - name: Install pinned runtime and audit tool
+        run: python -m pip install -r requirements.txt pip-audit==2.9.0
       - name: Python syntax
-        run: python -m py_compile server.py test_erp.py test_http.py
+        run: python -m py_compile server.py security.py webapp.py maintenance.py test_erp.py test_http.py test_security.py
       - name: Business rules and database integrity
         run: python test_erp.py
       - name: Login and HTTP workflow
         run: python test_http.py
+      - name: Security and encrypted backup tests
+        run: python test_security.py
+      - name: Audit production dependencies
+        run: python -m pip_audit --strict --disable-pip --no-deps -r requirements.txt
+      - name: Build production image
+        run: docker build --tag satata-erp-check .
       - name: JavaScript syntax
         run: node --check dist/app.js
       - name: GSM, catalog and scoped search
@@ -33,8 +41,8 @@ jobs:
           import pathlib, subprocess
           tracked = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')
           forbidden = [name for name in tracked if name and (
-              name.startswith('data/') or
-              pathlib.PurePosixPath(name).suffix.lower() in {'.db', '.sqlite', '.sqlite3', '.pem', '.key'} or
+              name.startswith(('data/', 'backups/', '.runtime-deps/', '.audit-deps/')) or
+              pathlib.PurePosixPath(name).suffix.lower() in {'.db', '.sqlite', '.sqlite3', '.pem', '.key', '.token', '.fernet'} or
               (pathlib.PurePosixPath(name).name.startswith('.env') and pathlib.PurePosixPath(name).name != '.env.example') or
-              name.endswith(('-wal', '-shm')))]
+              name.endswith(('-wal', '-shm')) or 'recovery-codes' in name)]
           assert not forbidden, 'Runtime files must not be committed: ' + ', '.join(forbidden)
